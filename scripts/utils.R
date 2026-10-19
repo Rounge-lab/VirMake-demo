@@ -1,11 +1,38 @@
 
 
-reorg_family <- function(dat, n = 10) {
-  dat %>% 
-    mutate(Family = str_replace(Family, "^n.a.$", "No reference"),
-           Family = str_replace(Family, "^Unclassified$", "Reference unclassified"),
-           Family = fct_infreq(Family),
-           Family = fct_other(Family, keep = levels(Family)[1:min(n, length(levels(Family)))]))
+reorg_family <- function(dat, n = 10, vConTACT_version = 3) {
+  
+  if (vConTACT_version == 2) {
+    dat %>% 
+      mutate(Family = str_replace(Family, "^n.a.$", "No reference"),
+             Family = str_replace(Family, "^Unclassified$", "Reference unclassified"),
+             Family = fct_infreq(Family),
+             Family = fct_other(Family, keep = levels(Family)[1:min(n, length(levels(Family)))]))
+  } else if (vConTACT_version == 3) {
+    dat %>% 
+      mutate(Family = case_when(realm_prediction == "singleton" ~ "Not determined",
+                                !str_detect(family_prediction, "novel_order") &
+                                  str_detect(family_prediction, "novel_family") ~ "Undefined, known class",
+                                !str_detect(family_prediction, "unplaced_class") &
+                                  str_detect(family_prediction, "novel_family") ~ "Undefined, known order",
+                                str_detect(family_prediction, "novel_family") ~ "Undefined",
+                                TRUE ~ family_prediction),
+             Family = fct_infreq(Family)) %>% 
+      (function(x) {
+        fam_inorder <- levels(x$Family)
+        if ("Not determined" %in% fam_inorder[ 1:min(n, length(levels(x$Family)))]) {
+          x %>% 
+            mutate(Family = fct_other(Family, keep = levels(Family)[1:min(n+1, length(levels(Family)))], other_level = "Other/ND")) %>% 
+            mutate(Family = fct_other(Family, drop = "Not determined", other_level = "Other/ND"))
+        } else {
+          x %>% 
+            mutate(Family = fct_other(Family, keep = levels(Family)[1:min(n+1, length(levels(Family)))], , other_level = "Other/ND"))
+        }
+      })
+             
+  } else {
+    stop("vConTACT 2 or 3 required")
+  }
 }
 
 summarize_samples <- function(data_by_sample, by_var = NULL) {
@@ -29,6 +56,7 @@ summarize_genomes <- function(data_by_genome, by_var = NULL) {
   
   summarize_vars <- c(`Genomes per vOTU` = "mult_genomes", 
                       `Virus integration` = "any_provirus", 
+                      `CheckV quality` = "vOTU_checkv_quality",
                       `Genome Family` = "Family")
   
   tmp <-
@@ -38,6 +66,9 @@ summarize_genomes <- function(data_by_genome, by_var = NULL) {
     mutate(any_provirus = ifelse(pangenome_n_provirus > 0, 
                                  "Integrated genome detected", 
                                  "No integration")) %>% 
+    mutate(vOTU_checkv_quality = factor(vOTU_checkv_quality, 
+                                        levels = c("Complete", "High-quality", "Medium-quality")) %>% 
+             fct_drop()) %>% 
     rename(all_of(summarize_vars))
   
   if (!is.null(by_var)) {
@@ -61,8 +92,7 @@ summarize_resource_usage <- function(res_usage_df) {
                          labels = c("Moreno-Gallego", "Li", "Buck"))) %>% 
     mutate(variable = factor(Dataset, 
                              levels = c("Samples", "Dataset size (Gbp)", 
-                                        "Memory needed (GB)", "CPU time (hours)", 
-                                        "Wall time (hours)"))) %>% 
+                                        "Memory needed (GB)", "CPU time (hours)"))) %>% 
     tbl_custom_summary(
       by = name,
       label = list(variable ~ "Totals per dataset"),
@@ -82,7 +112,7 @@ summarize_genomes_plot <- function(data_by_genome, pal = "nord::frost") {
               n_genomes = sum(n_genomes), .groups = "drop") %>% 
     ggplot(aes(y = Family)) +
     geom_col(aes(x = n_genomes), fill = "gray", width = 0.7) +
-    geom_col(aes(x = n_reps, fill = Family)) +
+    geom_col(aes(x = n_reps), fill = "#6ba3d6") +
     scale_fill_paletteer_d(palette = pal) +
     theme_light() +
     scale_x_log10(breaks = scales::trans_breaks("log10", function(x) 10^x, 3),
@@ -93,8 +123,8 @@ summarize_genomes_plot <- function(data_by_genome, pal = "nord::frost") {
     data_by_genome %>% 
     mutate(pangenome_median_length = pangenome_median_length/1e3) %>% 
     reorg_family() %>% 
-    ggplot(aes(x = pangenome_median_length, y = Family, fill = Family)) +
-    geom_boxplot(outlier.shape = 20, outlier.size = 0.4) +
+    ggplot(aes(x = pangenome_median_length, y = Family)) +
+    geom_boxplot(outlier.shape = 20, outlier.size = 0.4, fill = "#6ba3d6") +
     scale_fill_paletteer_d(palette = pal) +
     scale_x_log10() +
     theme_light() +
@@ -106,8 +136,8 @@ summarize_genomes_plot <- function(data_by_genome, pal = "nord::frost") {
     reorg_family() %>% 
     group_by(Family) %>% 
     summarize(frac_integrated = sum(pangenome_n_provirus)/sum(n_genomes), .groups = "drop") %>% 
-    ggplot(aes(x = frac_integrated, y = Family, color = Family)) +
-    geom_point() +
+    ggplot(aes(x = frac_integrated, y = Family)) +
+    geom_point(col = "#6ba3d6") +
     scale_color_paletteer_d(palette = pal) +
     scale_x_continuous(limits = c(0,1)) +
     theme_light() +
